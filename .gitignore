@@ -1,0 +1,26 @@
+# ===== 密钥文件（绝对不能提交） =====
+.env
+.env.*
+!*.example
+
+# ===== Python =====
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ===== Node =====
+node_modules/
+dist/
+build/
+
+# ===== IDE & OS =====
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
