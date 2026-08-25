@@ -1,0 +1,59 @@
+[
+  {
+    "title": "两数之和",
+    "description": "给定一个整数数组 nums 和一个目标值 target，请你在数组中找出和为目标值的那两个整数，并返回它们的下标。你可以假设每种输入只会对应一个答案，并且不能重复使用同一个元素。\n\n示例 1：\n输入：nums = [2,7,11,15], target = 9\n输出：[0,1]\n解释：nums[0] + nums[1] = 9\n\n示例 2：\n输入：nums = [3,2,4], target = 6\n输出：[1,2]",
+    "difficulty": "简单",
+    "language": "python",
+    "topic": "算法",
+    "tags": ["数组", "哈希表"],
+    "examples": [
+      {"input": "nums = [2,7,11,15], target = 9", "output": "[0,1]"},
+      {"input": "nums = [3,2,4], target = 6", "output": "[1,2]"}
+    ],
+    "test_cases": [
+      {"stdin": "2 7 11 15\n9", "expected_output": "0 1"},
+      {"stdin": "3 2 4\n6", "expected_output": "1 2"},
+      {"stdin": "3 3\n6", "expected_output": "0 1"}
+    ],
+    "reference_solution": "def two_sum(nums, target):\n    seen = {}\n    for i, v in enumerate(nums):\n        need = target - v\n        if need in seen:\n            return [seen[need], i]\n        seen[v] = i\n    return []",
+    "source": "manual",
+    "status": "published"
+  },
+  {
+    "title": "反转链表",
+    "description": "给你单链表的头节点 head，请反转链表，并返回反转后的链表。\n\n示例 1：\n输入：head = [1,2,3,4,5]\n输出：[5,4,3,2,1]",
+    "difficulty": "简单",
+    "language": "python",
+    "topic": "数据结构",
+    "tags": ["链表", "迭代"],
+    "examples": [
+      {"input": "head = [1,2,3,4,5]", "output": "[5,4,3,2,1]"}
+    ],
+    "test_cases": [
+      {"stdin": "1 2 3 4 5", "expected_output": "5 4 3 2 1"},
+      {"stdin": "", "expected_output": ""}
+    ],
+    "reference_solution": "def reverse_list(head):\n    prev = None\n    cur = head\n    while cur:\n        nxt = cur.next\n        cur.next = prev\n        prev = cur\n        cur = nxt\n    return prev",
+    "source": "manual",
+    "status": "published"
+  },
+  {
+    "title": "二分查找",
+    "description": "给定一个升序排列的整数数组 nums 和一个目标值 target，返回 target 在数组中的下标。如果不存在则返回 -1。要求时间复杂度 O(log n)。\n\n示例 1：\n输入：nums = [-1,0,3,5,9,12], target = 9\n输出：4\n\n示例 2：\n输入：nums = [-1,0,3,5,9,12], target = 2\n输出：-1",
+    "difficulty": "中等",
+    "language": "python",
+    "topic": "算法",
+    "tags": ["二分查找"],
+    "examples": [
+      {"input": "nums = [-1,0,3,5,9,12], target = 9", "output": "4"},
+      {"input": "nums = [-1,0,3,5,9,12], target = 2", "output": "-1"}
+    ],
+    "test_cases": [
+      {"stdin": "-1 0 3 5 9 12\n9", "expected_output": "4"},
+      {"stdin": "-1 0 3 5 9 12\n2", "expected_output": "-1"}
+    ],
+    "reference_solution": "def binary_search(nums, target):\n    lo, hi = 0, len(nums) - 1\n    while lo <= hi:\n        mid = (lo + hi) // 2\n        if nums[mid] == target:\n            return mid\n        if nums[mid] < target:\n            lo = mid + 1\n        else:\n            hi = mid - 1\n    return -1",
+    "source": "manual",
+    "status": "published"
+  }
+]

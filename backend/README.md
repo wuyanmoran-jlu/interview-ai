@@ -8,9 +8,9 @@
 | ASGI 服务器 | **Uvicorn** | 运行 FastAPI 应用，支持高并发异步请求 |
 | 数据校验 | **Pydantic** | 定义请求/响应模型，自动校验参数类型和必填项 |
 | AI 对话 | **OpenAI SDK** (兼容模式) | 连接 DeepSeek API，实现面试官的智能对话 |
-| HTTP 客户端 | **httpx** (异步) | 调用 Piston API 执行用户代码 |
-| 环境变量 | **python-dotenv** | 从 `.env` 文件加载 DeepSeek API Key |
-| 会话管理 | **Python dict** (内存) | 存储面试会话的对话历史 |
+| HTTP 客户端 | **httpx** (异步) | 调用 Judge0 API 在 Docker 沙箱中执行用户代码 |
+| 环境变量 | **python-dotenv** | 从 `.env` 文件加载 DeepSeek、Judge0 和 Redis 配置 |
+| 会话存储 | **Redis** (异步) | 持久化面试对话历史，支持 TTL 自动过期 |
 
 ---
 
@@ -21,10 +21,10 @@ backend/
 ├── main.py              # FastAPI 应用入口，定义所有 API 接口
 ├── models.py            # Pydantic 请求体模型定义
 ├── ai_client.py         # DeepSeek AI 对话客户端
-├── code_executor.py     # Piston 在线代码执行服务
-├── interview_manager.py # 面试会话管理 + AI 系统提示词
+├── code_executor.py     # Judge0 在线代码执行服务（本地 Docker）
+├── interview_manager.py # 面试会话管理 + Redis 存储 + AI 系统提示词
 ├── requirements.txt     # Python 依赖清单
-├── .env                 # 环境变量（DeepSeek API Key 等）
+├── .env                 # 环境变量（DeepSeek + Judge0 + Redis 配置）
 └── README.md            # 本文档
 ```
 
@@ -73,36 +73,38 @@ backend/
 
 ### 4. `code_executor.py` — 代码执行服务
 
-**技术**：调用 **Piston API**（`emkc.org` 提供的免费公共代码执行服务）。
+**技术**：调用 **Judge0 API**（本地 Docker 自托管代码沙箱，无需外部 API Key，无调用次数限制）。
 
-- `run_code(source_code, language, stdin)`：将用户代码、语言、标准输入发送到 Piston，返回运行结果
-- `LANG_MAP`：将前端传的简称（如 `"cpp"`）映射为 Piston 要求的语言名和版本号（如 `("c++", "10.2.0")`）
+- `run_code(source_code, language, stdin)`：将用户代码、语言、标准输入发送到 Judge0，返回运行结果
+- `LANG_MAP`：将前端传的简称（如 `"cpp"`）映射为 Judge0 语言 ID（如 `54`）
 - 支持的 4 种语言：**Python、JavaScript、Java、C++**
-- 返回结构化结果：`stdout`、`stderr`、`output`、`code`（退出码）、`signal`
+- 返回结构化结果：`stdout`、`stderr`、`output`、`code`（HTTP 状态码）、`cpu_time`、`memory`
 
 ### 5. `interview_manager.py` — 会话管理
 
-**技术**：使用 Python 字典 `Dict[str, List[dict]]` 在内存中存储会话。
+**技术**：使用 **Redis** 持久化存储对话历史，通过 `redis.asyncio` 异步客户端操作。
 
-核心数据结构：
-```python
-sessions = {
-    "uuid-xxxx": [
-        {"role": "system", "content": "你是专业面试官..."},
-        {"role": "user", "content": "请开始面试"},
-        {"role": "assistant", "content": "请实现一个..."},
-        ...
-    ]
-}
+- **连接池**：懒加载单例模式，`decode_responses=True` 自动解码 UTF-8
+- **Key 设计**：`interview:session:{session_id}` → JSON 字符串
+- **TTL**：`SESSION_TTL = 86400`（24 小时），每次 `add_message` 自动续期
+- **序列化**：`json.dumps(messages, ensure_ascii=False)` 保留中文
+
+核心数据结构（存储在 Redis 中）：
+```json
+[
+  {"role": "system", "content": "你是专业面试官..."},
+  {"role": "user", "content": "请开始面试"},
+  {"role": "assistant", "content": "请实现一个..."}
+]
 ```
 
-提供的 4 个函数：
-- **`create_session()`**：初始化会话，写入 system prompt（根据语言/方向/难度动态生成）
-- **`get_history()`**：获取完整对话历史，传给 AI 维持上下文
-- **`add_message()`**：追加对话记录（user 或 assistant 角色）
-- **`clear_session()`**：删除会话（目前未自动调用，可扩展）
+提供的 4 个异步函数：
+- **`create_session()`**：初始化会话，`SETEX` 写入 system prompt（根据语言/方向/难度动态生成）
+- **`get_history()`**：`GET` 读取并 `json.loads` 解析对话历史
+- **`add_message()`**：read-modify-write 追加消息，重置 TTL
+- **`clear_session()`**：`DEL` 删除整个会话
 
-**System Prompt 设计**：定义 AI 面试官的 4 个职责（出题、点评、追问、最终评价），并约束输出格式（禁用 `***`、代码块用反引号、避免过度格式化）。
+**System Prompt 设计**：定义 AI 面试官的 4 个职责（出题、点评、追问、最终评价），并约束输出格式（禁用 `***`、代码块用反引号、避免过度格式化）。提示词根据用户选择的语言、方向、难度动态生成。
 
 ---
 
@@ -123,7 +125,7 @@ POST /interview/start
   ▼
 POST /interview/run
   │
-  ├─ run_code(code, lang, stdin)  ← Piston API 执行代码
+  ├─ run_code(code, lang, stdin)  ← Judge0 API 在 Docker 中执行代码
   └─ 返回 { stdout, stderr, ... }
 
 用户点击"提交并获取点评"
@@ -159,12 +161,30 @@ POST /interview/evaluate
 
 ## 启动方式
 
+**一键启动（推荐）**：
+```powershell
+.\start.ps1    # 自动启动 Redis + 后端 + 前端
+.\stop.ps1     # 一键停止所有服务
+```
+
+**手动分别启动**：
 ```bash
+# 1. 启动 Redis
+cd judge0
+docker-compose up -d session-redis
+
+# 2. 启动后端
 cd backend
 .venv\Scripts\python.exe main.py
 # 输出: Uvicorn running on http://0.0.0.0:8000
+
+# 3. 启动前端（新终端窗口）
+cd frontend
+npm run dev
+# 输出: http://localhost:5173
 ```
 
 首次运行前需确保：
 1. 创建虚拟环境并安装依赖：`pip install -r requirements.txt`
-2. 配置 `.env` 文件中的 `DEEPSEEK_API_KEY`
+3. 确保 Docker 已启动，Judge0 容器正在运行（`localhost:2358`）
+3. 确保 Redis 已启动（默认 `localhost:6379`）
