@@ -2,6 +2,61 @@
 
 本文件记录项目的重要版本变更。
 
+## v0.4.0 - 2026-08-30
+
+### 🎯 核心主题
+
+体验质变 + 工程成熟：AI 回复全面流式化，题库隐藏用例自动判题，基于评分数据的薄弱方向分析，并引入数据库迁移、配置集中管理、容器化与 CI。
+
+### ✨ 新功能
+
+**流式输出（SSE）**
+- `/interview/review`、`/interview/answer`、`/interview/evaluate` 改为 Server-Sent Events 流式响应
+- `chat_stream()` 增量生成器，前端 `streamPost()` 逐字渲染，AI 回复"打字机"效果
+- 流结束后才执行会话摘要刷新、总分提取等收尾逻辑
+
+**自动判题**
+- `POST /interview/verify`：用题库隐藏用例跑用户代码，返回通过率与逐用例结果
+- `/interview/review` 自动判题并把「通过 X/Y 用例」注入点评上下文
+- 前端「✅ 判题」按钮 + 通过率徽章 + 逐用例卡片；LLM 生成题优雅降级
+
+**薄弱方向分析**
+- 会话索引新增评分字段，面试加权总分自动回写
+- `GET /auth/weaknesses`：按方向聚合均分升序排列；样本不足 3 场不给结论
+- 个人中心展示薄弱方向 + 一键「去练习」直达对应方向面试
+
+### 🛠 工程化
+
+**数据库迁移（Alembic）**
+- 完整初始迁移（5 张表 + 索引），空库验证可执行，现网库已 stamp 基线
+- 以后模型变更必须带迁移脚本，告别手动 ALTER TABLE
+
+**配置集中管理（pydantic-settings）**
+- `config.py` 统一管理数据库/Redis/Judge0/JWT/CORS/AI 全部配置
+- CORS 允许源可配置化（JSON 数组）
+
+**容器化一键启动**
+- 后端/前端 Dockerfile + .dockerignore
+- 根 `docker-compose.yml`（include Judge0 全家桶）：一条命令启动全部服务
+- PostgreSQL 首启自动创建知识库用户与数据库（kb-init.sql）
+
+**CI（GitHub Actions）**
+- push/PR 自动运行：后端 pytest（PG + Redis 服务容器）+ 前端 lint/build
+
+### 🔒 安全
+
+- 登录限流：同用户名连续失败 5 次锁定 15 分钟，成功后清零（Redis 计数）
+
+### 📄 文档
+
+- 根 README 重写：架构图（mermaid）、功能清单、Docker 与本地两种启动方式、环境变量表、测试与迁移说明
+
+### 🧪 测试
+
+- 后端测试扩展至 107 项，新增：判题逻辑与端点、评分聚合与短板排序、登录限流（fake Redis 语义测试）
+
+---
+
 ## v0.3.0 - 2026-08-30
 
 ### 🎯 核心主题

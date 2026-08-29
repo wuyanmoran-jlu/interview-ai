@@ -333,3 +333,43 @@ pre { white-space: pre-wrap; word-break: break-word; font-family: 'Consolas', 'C
 .profile-divider { border-top: 1px solid #3e3e42; margin: 8px 0; }
 .profile-modal h4 { color: #aaa; font-size: 13px; }
 .modal-ok { color: #89d185; font-size: 13px; }
+
+/* ===== Weakness List ===== */
+.weakness-list { display: flex; flex-direction: column; gap: 6px; }
+.weakness-item {
+  display: flex; justify-content: space-between; align-items: center;
+  background: #1e1e1e; border: 1px solid #3e3e42; border-radius: 6px;
+  padding: 8px 12px;
+}
+.weakness-info { display: flex; flex-direction: column; gap: 2px; }
+.weakness-topic { color: #e0e0e0; font-size: 14px; font-weight: 600; }
+.weakness-score { color: #e5c07b; font-size: 12px; }
+.weakness-practice {
+  background: #0e639c; color: #fff; border: none; border-radius: 4px;
+  padding: 5px 12px; font-size: 12px; cursor: pointer;
+}
+.weakness-practice:hover { background: #1177bb; }
+
+/* ===== Verdict Box ===== */
+.verdict-box {
+  margin-top: 10px; background: #252526; border: 1px solid #3e3e42;
+  border-radius: 6px; padding: 10px 12px;
+}
+.verdict-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.verdict-pass { color: #89d185; font-weight: 600; font-size: 14px; }
+.verdict-fail { color: #f48771; font-weight: 600; font-size: 14px; }
+.verdict-clear {
+  background: none; border: none; color: #888; font-size: 16px; cursor: pointer; padding: 0 4px;
+}
+.verdict-clear:hover { color: #fff; }
+.verdict-cases { display: flex; flex-direction: column; gap: 6px; }
+.verdict-case {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12px;
+  padding: 6px 8px; border-radius: 4px;
+}
+.case-pass { background: #1e2a1e; }
+.case-fail { background: #2a1e1e; }
+.case-mark { color: #89d185; }
+.case-fail .case-mark { color: #f48771; }
+.case-detail { display: flex; flex-direction: column; gap: 2px; color: #aaa; }
+.case-detail span { word-break: break-all; }

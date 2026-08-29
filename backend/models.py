@@ -22,6 +22,12 @@ class ReviewRequest(BaseModel):
     language: str = "python"
 
 
+class VerifyRequest(BaseModel):
+    session_id: str
+    source_code: str
+    language: str = "python"
+
+
 class EvaluateRequest(BaseModel):
     session_id: str
 

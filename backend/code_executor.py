@@ -1,6 +1,8 @@
 import logging
 import httpx
 
+from config import settings
+
 logger = logging.getLogger("interview.code_executor")
 
 
@@ -41,7 +43,7 @@ def summarize_run_result(result: dict, max_chars: int = 300) -> str:
     return summary or "无明显输出。"
 
 
-JUDGE0_URL = "http://localhost:2358/submissions?base64_encoded=false&wait=true"
+JUDGE0_URL = f"{settings.judge0_url}/submissions?base64_encoded=false&wait=true"
 
 # Judge0 语言 ID 映射（judge0/judge0:1.13.0）
 LANG_MAP = {

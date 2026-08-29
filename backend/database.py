@@ -3,7 +3,6 @@
 使用 SQLAlchemy 2.x 异步引擎连接专用 PostgreSQL 实例（kb-db 服务）。
 """
 import logging
-import os
 
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import (
@@ -13,13 +12,12 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
+from config import settings
+
 load_dotenv()
 logger = logging.getLogger("interview.kb")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://interview:kb_pass_2025_dev@localhost:5433/interview_kb",
-)
+DATABASE_URL = settings.database_url
 
 engine = create_async_engine(
     DATABASE_URL,

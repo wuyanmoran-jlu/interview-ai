@@ -1,16 +1,17 @@
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 
+from config import settings
+
 load_dotenv()
 logger = logging.getLogger("interview.session")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = settings.redis_url
 SESSION_TTL = 604800  # 会话过期时间：7 天
 KEY_SESSION = "interview:session:"   # 对话消息
 KEY_META = "interview:meta:"         # 会话元信息

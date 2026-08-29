@@ -21,18 +21,56 @@ from sqlalchemy import DateTime, String, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from config import settings
 from database import Base, get_session
 from interview_manager import _get_redis
 
 load_dotenv()
 logger = logging.getLogger("interview.auth")
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-only-insecure-secret")
-JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
+JWT_SECRET = settings.jwt_secret
+JWT_EXPIRE_DAYS = settings.jwt_expire_days
 JWT_ALGORITHM = "HS256"
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 MIN_PASSWORD_LEN = 8
+
+# 登录限流：同用户名连续失败 5 次锁定 15 分钟
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_SECONDS = 15 * 60
+
+
+def _login_fail_key(username: str) -> str:
+    return f"auth:fail:{username}"
+
+
+def should_lock(fail_count: int) -> bool:
+    """纯函数：失败次数达到阈值则锁定。"""
+    return fail_count >= LOGIN_MAX_FAILURES
+
+
+async def check_login_rate_limit(username: str) -> None:
+    """检查登录限流，超限抛 429。"""
+    redis = _get_redis()
+    key = _login_fail_key(username)
+    raw = await redis.get(key)
+    if raw and should_lock(int(raw)):
+        ttl = max(await redis.ttl(key), 0)
+        minutes = max(ttl // 60 + 1, 1)
+        raise HTTPException(status_code=429, detail=f"尝试次数过多，请在 {minutes} 分钟后重试")
+
+
+async def record_login_failure(username: str) -> None:
+    redis = _get_redis()
+    key = _login_fail_key(username)
+    pipe = redis.pipeline()
+    pipe.incr(key)
+    pipe.expire(key, LOGIN_LOCK_SECONDS)
+    await pipe.execute()
+
+
+async def clear_login_failures(username: str) -> None:
+    await _get_redis().delete(_login_fail_key(username))
 
 bearer_scheme = HTTPBearer(auto_error=False)
 

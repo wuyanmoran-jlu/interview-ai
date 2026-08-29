@@ -23,6 +23,7 @@ from knowledge_base import (
     suggest_difficulty,
 )
 from interview_manager import _get_redis
+from question_reviewer import compare_outputs
 
 logger = logging.getLogger("interview.kb.service")
 
@@ -286,6 +287,52 @@ async def pick_rubric(
         if rubric is not None:
             return rubric
     return None
+
+
+# ===== 自动判题 =====
+
+async def verify_solution_cases(
+    session: AsyncSession,
+    question_id: int,
+    source_code: str,
+    language: str,
+) -> Optional[dict]:
+    """用题库的隐藏测试用例判题用户代码。
+
+    返回 {question_id, passed, total, results[]}；
+    题目不存在或没有测试用例时返回 None（不可判题，前端降级为普通运行）。
+    """
+    from code_executor import run_code
+
+    question = await get_question(session, question_id)
+    if question is None or not question.test_cases:
+        return None
+
+    results = []
+    passed = 0
+    for case in question.test_cases:
+        result = await run_code(source_code, language, str(case.get("stdin") or ""))
+        ok = result.get("code") == 3 and compare_outputs(
+            result.get("stdout") or "", str(case.get("expected_output") or "")
+        )
+        if ok:
+            passed += 1
+        results.append(
+            {
+                "passed": ok,
+                "stdin": str(case.get("stdin") or ""),
+                "expected": str(case.get("expected_output") or ""),
+                "actual": str(result.get("stdout") or "").strip(),
+                "signal": result.get("signal"),
+            }
+        )
+
+    return {
+        "question_id": question_id,
+        "passed": passed,
+        "total": len(question.test_cases),
+        "results": results,
+    }
 
 
 # ===== 评分统计与难度校准 =====

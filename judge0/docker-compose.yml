@@ -38,6 +38,8 @@ services:
       - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data/
+      # 首次初始化时创建知识库用户与数据库
+      - ./kb-init.sql:/docker-entrypoint-initdb.d/kb-init.sql:ro
     <<: *default-logging
     restart: always
 

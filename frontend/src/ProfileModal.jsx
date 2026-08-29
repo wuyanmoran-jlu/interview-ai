@@ -4,8 +4,9 @@ import { clearAuth, resetAnonymousId } from './auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
-export default function ProfileModal({ open, onClose, user, onLoggedOut }) {
+export default function ProfileModal({ open, onClose, user, onLoggedOut, onPractice }) {
   const [stats, setStats] = useState(null)
+  const [weaknesses, setWeaknesses] = useState(null)
   const [oldPassword, setOldPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -16,12 +17,17 @@ export default function ProfileModal({ open, onClose, user, onLoggedOut }) {
   useEffect(() => {
     if (!open) return
     setStats(null)
+    setWeaknesses(null)
     setMsg('')
     setError('')
     axios
       .get(`${API_BASE}/auth/stats`)
       .then((res) => setStats(res.data))
       .catch(() => setStats(null))
+    axios
+      .get(`${API_BASE}/auth/weaknesses`)
+      .then((res) => setWeaknesses(res.data))
+      .catch(() => setWeaknesses(null))
   }, [open])
 
   if (!open) return null
@@ -87,6 +93,28 @@ export default function ProfileModal({ open, onClose, user, onLoggedOut }) {
               <span key={d} className="profile-chip">{d} × {c}</span>
             ))}
           </div>
+        )}
+
+        <div className="profile-divider" />
+        <h4>薄弱方向</h4>
+        {weaknesses && weaknesses.ready ? (
+          <div className="weakness-list">
+            {weaknesses.weaknesses.map((w) => (
+              <div key={w.topic} className="weakness-item">
+                <div className="weakness-info">
+                  <span className="weakness-topic">{w.topic}</span>
+                  <span className="weakness-score">均分 {w.avg_score}（{w.sessions} 场）</span>
+                </div>
+                <button className="weakness-practice" onClick={() => onPractice && onPractice(w.topic)}>
+                  去练习
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="modal-hint">
+            {weaknesses?.message || '完成至少 3 场带评分的面试后，即可解锁薄弱方向分析。'}
+          </p>
         )}
 
         <div className="profile-divider" />

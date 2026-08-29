@@ -23,6 +23,7 @@ from kb_service import (
     submit_rating,
     update_avg_score,
     update_question,
+    verify_solution_cases,
 )
 from knowledge_base import (
     MIN_REVIEWS_FOR_DECISION,
@@ -362,3 +363,59 @@ async def test_to_dict_exposes_difficulty_hint(db):
     data = fetched.to_dict()
     assert data["difficulty_hint"] == "偏难：建议上调为中等"
     assert data["avg_score"] == 3.0
+
+
+# ===== 自动判题 =====
+
+def verdict_question_data():
+    data = qdata(status="published")
+    data["test_cases"] = [
+        {"stdin": "1 2 3", "expected_output": "6"},
+        {"stdin": "4 5", "expected_output": "9"},
+        {"stdin": "10", "expected_output": "10"},
+    ]
+    return data
+
+
+@pytest.mark.asyncio
+async def test_verify_solution_cases_counts_pass(monkeypatch, db):
+    created = await create_question(db, verdict_question_data())
+
+    async def fake_run_code(source_code, language, stdin):
+        nums = [int(x) for x in stdin.split()]
+        return {"code": 3, "stdout": str(sum(nums)), "stderr": "", "signal": "Accepted"}
+
+    monkeypatch.setattr("code_executor.run_code", fake_run_code)
+
+    verdict = await verify_solution_cases(db, created.id, "fake code", "python")
+    assert verdict is not None
+    assert verdict["passed"] == 3
+    assert verdict["total"] == 3
+    assert all(r["passed"] for r in verdict["results"])
+
+
+@pytest.mark.asyncio
+async def test_verify_solution_cases_reports_failures(monkeypatch, db):
+    created = await create_question(db, verdict_question_data())
+
+    async def fake_run_code(source_code, language, stdin):
+        return {"code": 3, "stdout": "0", "stderr": "", "signal": "Accepted"}  # 总是错误答案
+
+    monkeypatch.setattr("code_executor.run_code", fake_run_code)
+
+    verdict = await verify_solution_cases(db, created.id, "fake code", "python")
+    assert verdict["passed"] == 0
+    assert len(verdict["results"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_verify_solution_cases_returns_none_without_cases(db):
+    data = qdata(status="published")
+    data["test_cases"] = []  # 显式无测试用例
+    created = await create_question(db, data)
+    assert await verify_solution_cases(db, created.id, "code", "python") is None
+
+
+@pytest.mark.asyncio
+async def test_verify_solution_cases_returns_none_for_missing_question(db):
+    assert await verify_solution_cases(db, 999, "code", "python") is None

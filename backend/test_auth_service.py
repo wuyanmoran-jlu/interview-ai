@@ -8,12 +8,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from auth_service import (
     User,
     change_password,
+    check_login_rate_limit,
+    clear_login_failures,
     create_token,
     decode_token,
     get_current_user,
     hash_password,
     login_user,
+    record_login_failure,
     register_user,
+    should_lock,
     validate_credentials,
     validate_password,
     verify_password,
@@ -156,6 +160,79 @@ async def test_change_password_same_as_old(db):
 
     stored = (await db.execute(select(User).where(User.username == "alice"))).scalar_one()
     assert "相同" in await change_password(db, stored.id, "oldpassword", "oldpassword")
+
+
+# ===== 登录限流 =====
+
+class FakeRedis:
+    """限流测试用的内存 Redis fake，模拟 incr/expire/ttl/delete 语义。"""
+
+    def __init__(self):
+        self.data = {}
+        self.ttls = {}
+
+    async def get(self, key):
+        return self.data.get(key)
+
+    def incr(self, key):
+        self.data[key] = int(self.data.get(key) or 0) + 1
+        return self.data[key]
+
+    def expire(self, key, seconds):
+        self.ttls[key] = seconds
+
+    async def ttl(self, key):
+        return self.ttls.get(key, 900)
+
+    async def delete(self, key):
+        self.data.pop(key, None)
+        self.ttls.pop(key, None)
+
+    def pipeline(self):
+        return self
+
+    async def execute(self):
+        return None
+
+
+def test_should_lock_threshold():
+    assert should_lock(4) is False
+    assert should_lock(5) is True
+    assert should_lock(100) is True
+
+
+@pytest.mark.asyncio
+async def test_check_login_rate_limit_blocks_after_threshold(monkeypatch):
+    fake = FakeRedis()
+    fake.data["auth:fail:alice"] = "5"
+    monkeypatch.setattr("auth_service._get_redis", lambda: fake)
+
+    with pytest.raises(HTTPException) as exc:
+        await check_login_rate_limit("alice")
+    assert exc.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_check_login_rate_limit_allows_below_threshold(monkeypatch):
+    fake = FakeRedis()
+    fake.data["auth:fail:alice"] = "4"
+    monkeypatch.setattr("auth_service._get_redis", lambda: fake)
+
+    await check_login_rate_limit("alice")  # 不抛异常
+
+
+@pytest.mark.asyncio
+async def test_record_and_clear_failures(monkeypatch):
+    fake = FakeRedis()
+    monkeypatch.setattr("auth_service._get_redis", lambda: fake)
+
+    await record_login_failure("alice")
+    await record_login_failure("alice")
+    assert fake.data["auth:fail:alice"] == 2
+    assert fake.ttls["auth:fail:alice"] == 15 * 60
+
+    await clear_login_failures("alice")
+    assert "auth:fail:alice" not in fake.data
 
 
 # ===== get_current_user 依赖 =====

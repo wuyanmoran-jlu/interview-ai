@@ -9,9 +9,12 @@ from user_sessions import (
     UserSession,
     delete_session_index,
     get_session_index,
+    get_topic_scores,
     get_user_stats,
+    get_user_weaknesses,
     list_sessions_by_user,
     migrate_user_data,
+    set_session_score,
     update_session_title,
     upsert_session,
 )
@@ -125,3 +128,69 @@ async def test_get_user_stats_empty(db):
         "by_difficulty": {},
         "total_ratings": 0,
     }
+
+
+# ===== 会话评分与薄弱分析 =====
+
+@pytest.mark.asyncio
+async def test_set_session_score(db):
+    await upsert_session(db, "s1", "u1", "A", "python", "算法", "简单")
+    await set_session_score(db, "s1", 7.5)
+    index = await get_session_index(db, "s1")
+    assert index.score == 7.5
+
+
+@pytest.mark.asyncio
+async def test_set_session_score_missing_session_is_noop(db):
+    await set_session_score(db, "ghost", 7.5)  # 不报错即可
+
+
+@pytest.mark.asyncio
+async def test_get_topic_scores_averages_per_topic(db):
+    await upsert_session(db, "s1", "u1", "A", "python", "算法", "简单")
+    await upsert_session(db, "s2", "u1", "B", "python", "算法", "简单")
+    await upsert_session(db, "s3", "u1", "C", "python", "数据结构", "简单")
+    await set_session_score(db, "s1", 8.0)
+    await set_session_score(db, "s2", 6.0)
+    await set_session_score(db, "s3", 9.0)
+
+    scores = await get_topic_scores(db, "u1")
+    by_topic = {s["topic"]: s for s in scores}
+    assert by_topic["算法"]["avg_score"] == 7.0  # (8+6)/2
+    assert by_topic["算法"]["sessions"] == 2
+    assert by_topic["数据结构"]["avg_score"] == 9.0
+
+
+@pytest.mark.asyncio
+async def test_get_topic_scores_ignores_unscored_sessions(db):
+    await upsert_session(db, "s1", "u1", "A", "python", "算法", "简单")
+    await upsert_session(db, "s2", "u1", "B", "python", "算法", "简单")
+    await set_session_score(db, "s1", 8.0)
+    scores = await get_topic_scores(db, "u1")
+    assert len(scores) == 1
+    assert scores[0]["sessions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_user_weaknesses_not_ready_with_few_samples(db):
+    await upsert_session(db, "s1", "u1", "A", "python", "算法", "简单")
+    await set_session_score(db, "s1", 8.0)
+    result = await get_user_weaknesses(db, "u1")
+    assert result["ready"] is False
+    assert result["weaknesses"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_user_weaknesses_sorted_ascending(db):
+    await upsert_session(db, "s1", "u1", "A", "python", "算法", "简单")
+    await upsert_session(db, "s2", "u1", "B", "python", "数据结构", "简单")
+    await upsert_session(db, "s3", "u1", "C", "python", "数据库", "简单")
+    await set_session_score(db, "s1", 7.0)   # 算法
+    await set_session_score(db, "s2", 9.0)   # 数据结构
+    await set_session_score(db, "s3", 5.0)   # 数据库（最弱）
+
+    result = await get_user_weaknesses(db, "u1")
+    assert result["ready"] is True
+    topics = [w["topic"] for w in result["weaknesses"]]
+    assert topics[0] == "数据库"
+    assert topics[-1] == "数据结构"

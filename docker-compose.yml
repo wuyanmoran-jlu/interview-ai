@@ -1,0 +1,32 @@
+name: interview-ai
+
+include:
+  - judge0/docker-compose.yml
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://interview:kb_pass_2025_dev@db:5432/interview_kb
+      REDIS_URL: redis://session-redis:6379/0
+      JUDGE0_URL: http://server:2358
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret}
+      JWT_EXPIRE_DAYS: "7"
+      CORS_ORIGINS: '["http://localhost:5173"]'
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+    depends_on:
+      - db
+      - session-redis
+      - server
+    restart: always
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: always

@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from sqlalchemy import DateTime, String, delete, func, select, update
+from sqlalchemy import DateTime, Float, String, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +30,7 @@ class UserSession(Base):
     language: Mapped[str] = mapped_column(String(20), default="python")
     topic: Mapped[str] = mapped_column(String(30), default="")
     difficulty: Mapped[str] = mapped_column(String(20), default="")
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 面试加权总分（0-10）
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -161,4 +162,52 @@ async def get_user_stats(session: AsyncSession, user_id: str) -> dict:
         "by_topic": {t: c for t, c in topic_rows},
         "by_difficulty": {d: c for d, c in difficulty_rows},
         "total_ratings": rating_total,
+    }
+
+
+# ===== 会话评分与薄弱分析 =====
+
+async def set_session_score(session: AsyncSession, session_id: str, score: float) -> None:
+    """把面试加权总分回写到会话索引，供薄弱分析使用。"""
+    existing = await session.get(UserSession, session_id)
+    if existing is not None:
+        existing.score = score
+        await session.commit()
+
+
+async def get_topic_scores(session: AsyncSession, user_id: str) -> list[dict]:
+    """按方向聚合该用户带评分的会话平均分（升序返回）。"""
+    rows = (
+        await session.execute(
+            select(
+                UserSession.topic,
+                func.avg(UserSession.score),
+                func.count(UserSession.score),
+            )
+            .where(UserSession.user_id == user_id, UserSession.score.is_not(None))
+            .group_by(UserSession.topic)
+        )
+    ).all()
+    return [
+        {"topic": topic, "avg_score": round(float(avg), 2), "sessions": int(cnt)}
+        for topic, avg, cnt in rows
+    ]
+
+
+async def get_user_weaknesses(session: AsyncSession, user_id: str) -> dict:
+    """薄弱方向分析：均分最低的方向排在前面。
+
+    评分样本不足 3 场时不给出结论，避免噪声数据误导。
+    """
+    scores = await get_topic_scores(session, user_id)
+    scored_sessions = sum(s["sessions"] for s in scores)
+    if scored_sessions < 3:
+        return {
+            "ready": False,
+            "message": "完成至少 3 场带评分的面试后，即可解锁薄弱方向分析",
+            "weaknesses": [],
+        }
+    return {
+        "ready": True,
+        "weaknesses": sorted(scores, key=lambda s: s["avg_score"]),
     }

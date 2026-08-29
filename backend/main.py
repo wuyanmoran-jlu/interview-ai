@@ -3,32 +3,38 @@ import logging
 import re
 import uuid
 from typing import Optional
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import (StartRequest, RunRequest, ReviewRequest, EvaluateRequest,
-                    AnswerRequest, QuestionCreate, QuestionUpdate, QuestionStatusUpdate,
-                    QuestionRatingCreate, RegisterRequest, LoginRequest,
-                    ChangePasswordRequest)
-from ai_client import chat, get_cached_feedback, cache_feedback
+from models import (StartRequest, RunRequest, ReviewRequest, VerifyRequest,
+                    EvaluateRequest, AnswerRequest, QuestionCreate, QuestionUpdate,
+                    QuestionStatusUpdate, QuestionRatingCreate, RegisterRequest,
+                    LoginRequest, ChangePasswordRequest)
+from ai_client import chat, chat_stream, get_cached_feedback, cache_feedback
 from auth_service import (
     bearer_scheme,
     blacklist_token,
     change_password,
+    check_login_rate_limit,
+    clear_login_failures,
     decode_token,
     get_current_user,
     get_optional_user,
     login_user,
+    record_login_failure,
     register_user,
 )
 from code_executor import run_code, summarize_run_result
+from config import settings
 from database import get_session
 from user_sessions import (
     delete_session_index,
     get_session_index,
     get_user_stats,
+    get_user_weaknesses,
     list_sessions_by_user,
+    set_session_score,
     upsert_session,
 )
 from interview_manager import (create_session, get_history, add_message,
@@ -42,7 +48,7 @@ from kb_service import (
     delete_question, set_status, pick_question, increment_usage,
     get_used_question_ids, mark_question_used,
     submit_rating, list_ratings, InvalidRatingError, pick_rubric,
-    update_avg_score, get_stats,
+    update_avg_score, get_stats, verify_solution_cases,
 )
 
 logging.basicConfig(
@@ -55,10 +61,26 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_origins,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+
+
+def sse_response(generator, meta: Optional[dict] = None):
+    """把异步文本生成器包装成 SSE（Server-Sent Events）响应。
+
+    事件格式：先发 meta 事件（元数据），随后逐个 delta 事件，最后 done 事件。
+    """
+    async def event_stream():
+        if meta:
+            yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+        async for delta in generator:
+            payload = json.dumps({"delta": delta}, ensure_ascii=False)
+            yield f"data: {payload}\n\n"
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.exception_handler(Exception)
@@ -92,12 +114,19 @@ async def auth_register(req: RegisterRequest, session: AsyncSession = Depends(ge
 
 @app.post("/auth/login")
 async def auth_login(req: LoginRequest, session: AsyncSession = Depends(get_session)):
-    """用户名密码登录。"""
+    """用户名密码登录（带失败限流）。"""
+    try:
+        await check_login_rate_limit(req.username)
+    except HTTPException as e:
+        return JSONResponse(status_code=429, content={"error": e.detail})
+
     result = await login_user(
         session, req.username, req.password, req.anonymous_id or ""
     )
     if result is None:
+        await record_login_failure(req.username)
         return JSONResponse(status_code=401, content={"error": "用户名或密码错误"})
+    await clear_login_failures(req.username)
     return result
 
 
@@ -149,6 +178,15 @@ async def auth_stats(
 ):
     """当前用户的个人统计（历史会话分布、评价数）。"""
     return await get_user_stats(session, user["id"])
+
+
+@app.get("/auth/weaknesses")
+async def auth_weaknesses(
+    user: dict = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """薄弱方向分析（按用户会话评分聚合）。"""
+    return await get_user_weaknesses(session, user["id"])
 
 @app.post("/interview/start")
 async def start_interview(
@@ -227,8 +265,31 @@ async def run_user_code(req: RunRequest):
     result = await run_code(req.source_code, req.language, req.stdin)
     return result
 
+@app.post("/interview/verify")
+async def verify_user_code(
+    req: VerifyRequest, session: AsyncSession = Depends(get_session)
+):
+    """自动判题：用题库隐藏用例运行用户代码，返回通过率与逐用例结果。
+
+    会话题目不可判（LLM 生成题 / 无用例）时返回 available=false，前端降级。
+    """
+    meta = await get_session_meta(req.session_id)
+    question_id = (meta or {}).get("question_id")
+    if question_id is None:
+        return {"available": False}
+
+    verdict = await verify_solution_cases(
+        session, question_id, req.source_code, req.language
+    )
+    if verdict is None:
+        return {"available": False}
+    verdict["available"] = True
+    return verdict
+
 @app.post("/interview/review")
-async def review_code(req: ReviewRequest):
+async def review_code(
+    req: ReviewRequest, session: AsyncSession = Depends(get_session)
+):
     lang = req.language
     result = await run_code(req.source_code, lang)
 
@@ -236,49 +297,79 @@ async def review_code(req: ReviewRequest):
     review_round += 1
     await increment_review_round(req.session_id)
 
+    # 若会话题目来自题库，自动判题并把通过率注入点评上下文
+    meta = await get_session_meta(req.session_id)
+    question_id = (meta or {}).get("question_id")
+    verdict = None
+    if question_id is not None:
+        verdict = await verify_solution_cases(
+            session, question_id, req.source_code, lang
+        )
+
     # 构建消息让 AI 点评：只保留关键输出摘要，不再把完整 stdout/stderr 拼进 prompt
     execution_summary = summarize_run_result(result)
+    verdict_line = ""
+    if verdict:
+        verdict_line = (
+            f"\n自动判题结果：通过 {verdict['passed']}/{verdict['total']} 个测试用例。"
+        )
     user_msg = (
         f"这是第 {review_round} 轮修改反馈。\n"
-        f"我提交了以下{lang}代码，运行结果摘要为：\n{execution_summary}\n"
+        f"我提交了以下{lang}代码，运行结果摘要为：\n{execution_summary}"
+        f"{verdict_line}\n"
         f"代码:\n{req.source_code}\n\n请点评。"
     )
     cached_review = await get_cached_feedback(req.source_code, lang, "", "review")
-    if cached_review:
-        review = cached_review
-    else:
+
+    async def generate():
+        if cached_review:
+            yield cached_review
+            return
         await add_message(req.session_id, "user", user_msg)
         history = await get_history(req.session_id)
         summary = await get_session_summary(req.session_id)
         messages = build_prompt_context(history, summary=summary, max_recent=6)
-        review = await chat(messages)
-        await add_message(req.session_id, "assistant", review)
-        cache_feedback(req.source_code, lang, "", "review", review)
+        full = ""
+        async for piece in chat_stream(messages):
+            full += piece
+            yield piece
+        await add_message(req.session_id, "assistant", full)
+        cache_feedback(req.source_code, lang, "", "review", full)
 
-    updated_history = await get_history(req.session_id)
-    new_summary = await generate_session_summary(updated_history)
-    await set_session_summary(req.session_id, new_summary)
+    async def with_cleanup():
+        async for delta in generate():
+            yield delta
+        # 流结束后刷新会话摘要
+        updated_history = await get_history(req.session_id)
+        new_summary = await generate_session_summary(updated_history)
+        await set_session_summary(req.session_id, new_summary)
 
-    return {
-        "review": review,
-        "run_result": result,
+    meta = {
         "review_round": review_round,
-        "next_step": "你可以继续修改代码并再次提交进行下一轮反馈。"
+        "run_result": result,
+        "next_step": "你可以继续修改代码并再次提交进行下一轮反馈。",
     }
+    return sse_response(with_cleanup(), meta=meta)
 
 @app.post("/interview/answer")
 async def answer_followup(req: AnswerRequest):
     await add_message(req.session_id, "user", req.answer)
-    history = await get_history(req.session_id)
-    summary = await get_session_summary(req.session_id)
-    messages = build_prompt_context(history, summary=summary, max_recent=6)
-    reply = await chat(messages)
-    await add_message(req.session_id, "assistant", reply)
 
-    updated_history = await get_history(req.session_id)
-    new_summary = await generate_session_summary(updated_history)
-    await set_session_summary(req.session_id, new_summary)
-    return {"reply": reply}
+    async def generate():
+        history = await get_history(req.session_id)
+        summary = await get_session_summary(req.session_id)
+        messages = build_prompt_context(history, summary=summary, max_recent=6)
+        full = ""
+        async for piece in chat_stream(messages):
+            full += piece
+            yield piece
+        await add_message(req.session_id, "assistant", full)
+        # 流结束后刷新会话摘要
+        updated_history = await get_history(req.session_id)
+        new_summary = await generate_session_summary(updated_history)
+        await set_session_summary(req.session_id, new_summary)
+
+    return sse_response(generate())
 
 @app.post("/interview/evaluate")
 async def evaluate_interview(req: EvaluateRequest, session: AsyncSession = Depends(get_session)):
@@ -292,26 +383,32 @@ async def evaluate_interview(req: EvaluateRequest, session: AsyncSession = Depen
 
     eval_msg = EVALUATION_PROMPT.format(scoring_rubric=scoring_rubric)
     await add_message(req.session_id, "user", eval_msg)
-    history = await get_history(req.session_id)
-    summary = await get_session_summary(req.session_id)
-    messages = build_prompt_context(history, summary=summary, max_recent=6)
-    evaluation = await chat(messages)
-    await add_message(req.session_id, "assistant", evaluation)
 
-    updated_history = await get_history(req.session_id)
-    new_summary = await generate_session_summary(updated_history)
-    await set_session_summary(req.session_id, new_summary)
+    async def generate():
+        history = await get_history(req.session_id)
+        summary = await get_session_summary(req.session_id)
+        messages = build_prompt_context(history, summary=summary, max_recent=6)
+        full = ""
+        async for piece in chat_stream(messages):
+            full += piece
+            yield piece
+        await add_message(req.session_id, "assistant", full)
 
-    # 从评分报告中提取加权总分，回写题库用于难度校准
-    question_id = (meta or {}).get("question_id")
-    if question_id is not None:
-        match = re.search(r"加权总分[：:]\s*(\d+(?:\.\d+)?)", evaluation)
+        updated_history = await get_history(req.session_id)
+        new_summary = await generate_session_summary(updated_history)
+        await set_session_summary(req.session_id, new_summary)
+
+        # 从评分报告中提取加权总分：回写会话索引（薄弱分析）与题库（难度校准）
+        match = re.search(r"加权总分[：:]\s*(\d+(?:\.\d+)?)", full)
         if match:
             score = float(match.group(1))
-            await update_avg_score(session, question_id, score)
-            logger.info("题目 %s 评分回写: %.2f", question_id, score)
+            await set_session_score(session, req.session_id, score)
+            question_id = (meta or {}).get("question_id")
+            if question_id is not None:
+                await update_avg_score(session, question_id, score)
+                logger.info("题目 %s 评分回写: %.2f", question_id, score)
 
-    return {"evaluation": evaluation, "rubric": SCORING_RUBRIC}
+    return sse_response(generate(), meta={"rubric": SCORING_RUBRIC})
 
 
 @app.get("/interview/rubric")

@@ -6,7 +6,7 @@ import './App.css'
 import KBAdmin from './KBAdmin'
 import LoginModal from './LoginModal'
 import ProfileModal from './ProfileModal'
-import { clearAuth, getCurrentUser, getEffectiveUserId, resetAnonymousId } from './auth'
+import { clearAuth, getCurrentUser, getEffectiveUserId, resetAnonymousId, streamPost } from './auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
@@ -89,6 +89,7 @@ function App() {
   const [rated, setRated] = useState(false)
   const [ratingMsg, setRatingMsg] = useState('')
   const [rubricText, setRubricText] = useState(null)
+  const [verdict, setVerdict] = useState(null)
 
   const loadSessions = useCallback(async () => {
     try {
@@ -121,6 +122,7 @@ function App() {
       setStdin('')
       setRated(false)
       setRatingMsg('')
+      setVerdict(null)
       if (res.data.meta) {
         if (res.data.meta.language) setLanguage(res.data.meta.language)
         if (res.data.meta.topic) setTopic(res.data.meta.topic)
@@ -128,8 +130,7 @@ function App() {
         setQuestionId(res.data.meta.question_id || null)
       } else {
         setQuestionId(null)
-      }
-    } catch (err) {
+      }    } catch (err) {
       alert('加载会话失败：' + err.message)
     } finally {
       setLoading(false)
@@ -176,6 +177,7 @@ function App() {
       setQuestionId(res.data.question_id || null)
       setRated(false)
       setRatingMsg('')
+      setVerdict(null)
       await loadSessions()
     } catch (err) {
       alert('启动面试失败：' + err.message)
@@ -208,24 +210,53 @@ function App() {
     }
   }
 
-  const reviewCode = async () => {
+  const verifyCode = async () => {
     if (!sessionId) return alert('请先选择或开始一个面试')
     try {
       setLoading(true)
-      const res = await axios.post(`${API_BASE}/interview/review`, {
+      const res = await axios.post(`${API_BASE}/interview/verify`, {
         session_id: sessionId,
         source_code: code,
         language: language,
       })
-      setReview(res.data.review)
-      setReviewRound(res.data.review_round || 0)
-      const r = res.data.run_result
-      setOutput(
-        '=== 标准输出 ===\n' + (r.stdout || '(无)') +
-        '\n\n=== 错误输出 ===\n' + (r.stderr || '(无)') +
-        (r.signal ? '\n\n=== 信号 ===\n' + r.signal : '') +
-        (r.code !== null && r.code !== 0 ? '\n\n=== 退出码 ===\n' + r.code : '')
-      )
+      if (res.data.available) {
+        setVerdict(res.data)
+      } else {
+        setVerdict(null)
+        alert('当前题目不支持自动判题（AI 生成题），请直接运行并提交点评。')
+      }
+    } catch (err) {
+      setVerdict(null)
+      alert('判题失败：' + (err.response?.data?.error || err.message))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const reviewCode = async () => {
+    if (!sessionId) return alert('请先选择或开始一个面试')
+    try {
+      setLoading(true)
+      setReview('')
+      await streamPost('/interview/review', {
+        session_id: sessionId,
+        source_code: code,
+        language: language,
+      }, {
+        onMeta: (meta) => {
+          if (meta.review_round) setReviewRound(meta.review_round)
+          const r = meta.run_result
+          if (r) {
+            setOutput(
+              '=== 标准输出 ===\n' + (r.stdout || '(无)') +
+              '\n\n=== 错误输出 ===\n' + (r.stderr || '(无)') +
+              (r.signal ? '\n\n=== 信号 ===\n' + r.signal : '') +
+              (r.code !== null && r.code !== 0 ? '\n\n=== 退出码 ===\n' + r.code : '')
+            )
+          }
+        },
+        onDelta: (d) => setReview((prev) => prev + d),
+      })
     } catch (err) {
       setReview('获取点评失败：' + err.message)
     } finally {
@@ -238,11 +269,13 @@ function App() {
     if (!answerText.trim()) return alert('请输入你的回答')
     try {
       setLoading(true)
-      const res = await axios.post(`${API_BASE}/interview/answer`, {
+      setReview('')
+      await streamPost('/interview/answer', {
         session_id: sessionId,
         answer: answerText,
+      }, {
+        onDelta: (d) => setReview((prev) => prev + d),
       })
-      setReview(res.data.reply)
       setAnswerText('')
     } catch (err) {
       alert('发送回答失败：' + err.message)
@@ -255,10 +288,12 @@ function App() {
     if (!sessionId) return alert('没有进行中的面试')
     try {
       setLoading(true)
-      const res = await axios.post(`${API_BASE}/interview/evaluate`, {
+      setReview('')
+      await streamPost('/interview/evaluate', {
         session_id: sessionId,
+      }, {
+        onDelta: (d) => setReview((prev) => prev + d),
       })
-      setReview(res.data.evaluation)
       setQuestion('')
     } catch (err) {
       alert('获取评价失败：' + err.message)
@@ -458,9 +493,32 @@ function App() {
             </div>
             <div className="button-group">
               <button onClick={runCode} disabled={loading || !sessionId}>▶ 运行</button>
+              <button onClick={verifyCode} disabled={loading || !sessionId} title="用题库隐藏用例判定通过率">✅ 判题</button>
               <button onClick={reviewCode} disabled={loading || !sessionId}>🧠 提交并获取点评</button>
               <button onClick={endInterview} disabled={loading || !sessionId}>🏁 结束面试</button>
             </div>
+            {verdict && (
+              <div className="verdict-box">
+                <div className="verdict-header">
+                  <span className={verdict.passed === verdict.total ? 'verdict-pass' : 'verdict-fail'}>
+                    {verdict.passed === verdict.total ? '✅ 全部通过' : `❌ 通过 ${verdict.passed}/${verdict.total}`}
+                  </span>
+                  <button className="verdict-clear" onClick={() => setVerdict(null)}>×</button>
+                </div>
+                <div className="verdict-cases">
+                  {verdict.results.map((r, i) => (
+                    <div key={i} className={`verdict-case ${r.passed ? 'case-pass' : 'case-fail'}`}>
+                      <span className="case-mark">{r.passed ? '✓' : '✗'}</span>
+                      <div className="case-detail">
+                        <span>输入: {r.stdin || '(空)'}</span>
+                        <span>期望: {r.expected}</span>
+                        {!r.passed && <span>实际: {r.actual || r.signal || '(无输出)'}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="review-box">
               <h3>🤖 AI 点评</h3>
               {reviewRound > 0 && (
@@ -510,6 +568,11 @@ function App() {
         open={showProfile}
         onClose={() => setShowProfile(false)}
         user={currentUser}
+        onPractice={(topic) => {
+          setTopic(topic)
+          setView('interview')
+          setShowProfile(false)
+        }}
         onLoggedOut={() => {
           setCurrentUser(null)
           setSessionId(null)
