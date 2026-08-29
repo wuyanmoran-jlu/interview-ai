@@ -267,3 +267,69 @@ pre { white-space: pre-wrap; word-break: break-word; font-family: 'Consolas', 'C
   font-size: 12px; color: #e5c07b; background: #3a3420;
   padding: 4px 10px; border-radius: 4px; align-self: flex-start;
 }
+
+/* ===== User Area & Auth Modal ===== */
+.user-area { display: flex; align-items: center; gap: 8px; }
+.user-name { font-size: 13px; color: #ccc; white-space: nowrap; }
+.user-btn {
+  padding: 6px 12px; background: #3c3c3c; color: #e0e0e0;
+  border: 1px solid #555; border-radius: 4px; cursor: pointer; font-size: 13px;
+  white-space: nowrap;
+}
+.user-btn:hover { background: #4a4a4a; }
+
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.auth-modal {
+  position: relative; width: 360px; background: #252526;
+  border: 1px solid #3e3e42; border-radius: 10px; padding: 24px;
+  display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+.auth-modal h3 { color: #e0e0e0; font-size: 18px; }
+.modal-hint { font-size: 12px; color: #888; line-height: 1.5; }
+.auth-modal input {
+  padding: 9px 12px; background: #1e1e1e; color: #e0e0e0;
+  border: 1px solid #555; border-radius: 6px; font-size: 14px;
+}
+.auth-modal input:focus { outline: none; border-color: #0e639c; }
+.modal-error { color: #f48771; font-size: 13px; }
+.modal-actions { display: flex; gap: 10px; align-items: center; }
+.modal-actions button {
+  padding: 8px 16px; background: #0e639c; color: #fff; border: none;
+  border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.modal-actions button:hover { background: #1177bb; }
+.modal-actions button:disabled { background: #555; cursor: not-allowed; }
+.modal-actions .ghost { background: none; color: #75beff; padding: 8px 4px; }
+.modal-actions .ghost:hover { text-decoration: underline; background: none; }
+.modal-close {
+  position: absolute; top: 10px; right: 12px; background: none; border: none;
+  color: #aaa; font-size: 20px; cursor: pointer; padding: 2px 6px;
+}
+.modal-close:hover { color: #fff; }
+
+/* ===== Profile Modal ===== */
+.profile-modal { width: 400px; }
+.user-name-btn {
+  background: none; border: none; cursor: pointer; padding: 0; font-size: 13px;
+  color: #ccc;
+}
+.user-name-btn:hover { color: #75beff; text-decoration: underline; }
+.profile-stats { display: flex; gap: 12px; }
+.profile-stat {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: #1e1e1e; border: 1px solid #3e3e42; border-radius: 8px; padding: 10px;
+  font-size: 12px; color: #888;
+}
+.profile-stat-num { font-size: 22px; font-weight: 700; color: #e0e0e0; }
+.profile-breakdown h4 { color: #aaa; font-size: 13px; margin: 6px 0; }
+.profile-chip {
+  display: inline-block; background: #3c3c3c; color: #ccc; font-size: 12px;
+  padding: 3px 10px; border-radius: 10px; margin: 0 6px 6px 0;
+}
+.profile-divider { border-top: 1px solid #3e3e42; margin: 8px 0; }
+.profile-modal h4 { color: #aaa; font-size: 13px; }
+.modal-ok { color: #89d185; font-size: 13px; }

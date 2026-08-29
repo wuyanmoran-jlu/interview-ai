@@ -2,16 +2,35 @@ import json
 import logging
 import re
 import uuid
+from typing import Optional
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import (StartRequest, RunRequest, ReviewRequest, EvaluateRequest,
                     AnswerRequest, QuestionCreate, QuestionUpdate, QuestionStatusUpdate,
-                    QuestionRatingCreate)
+                    QuestionRatingCreate, RegisterRequest, LoginRequest,
+                    ChangePasswordRequest)
 from ai_client import chat, get_cached_feedback, cache_feedback
+from auth_service import (
+    bearer_scheme,
+    blacklist_token,
+    change_password,
+    decode_token,
+    get_current_user,
+    get_optional_user,
+    login_user,
+    register_user,
+)
 from code_executor import run_code, summarize_run_result
 from database import get_session
+from user_sessions import (
+    delete_session_index,
+    get_session_index,
+    get_user_stats,
+    list_sessions_by_user,
+    upsert_session,
+)
 from interview_manager import (create_session, get_history, add_message,
                                clear_session, get_user_sessions, get_session_meta,
                                delete_session, SCORING_RUBRIC, EVALUATION_PROMPT,
@@ -54,15 +73,99 @@ async def global_exception_handler(request: Request, exc: Exception):
 def read_root():
     return {"message": "Interview AI backend is running"}
 
+
+# ==================== 用户认证 ====================
+
+@app.post("/auth/register")
+async def auth_register(req: RegisterRequest, session: AsyncSession = Depends(get_session)):
+    """注册新用户，成功后直接返回登录态。"""
+    try:
+        result = await register_user(
+            session, req.username, req.password, req.anonymous_id or ""
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    if result is None:
+        return JSONResponse(status_code=409, content={"error": "用户名已存在"})
+    return result
+
+
+@app.post("/auth/login")
+async def auth_login(req: LoginRequest, session: AsyncSession = Depends(get_session)):
+    """用户名密码登录。"""
+    result = await login_user(
+        session, req.username, req.password, req.anonymous_id or ""
+    )
+    if result is None:
+        return JSONResponse(status_code=401, content={"error": "用户名或密码错误"})
+    return result
+
+
+@app.post("/auth/logout")
+async def auth_logout(
+    credentials=Depends(bearer_scheme),
+    user: dict = Depends(get_current_user),
+):
+    """登出：把当前 token 加入 Redis 黑名单，立即失效。"""
+    try:
+        payload = decode_token(credentials.credentials)
+        await blacklist_token(payload)
+    except Exception:
+        logger.warning("logout: token 解析失败", exc_info=True)
+    return {"ok": True, "username": user["username"]}
+
+
+@app.get("/auth/me")
+async def auth_me(user: dict = Depends(get_current_user)):
+    """返回当前登录用户。"""
+    return {"user": user}
+
+
+@app.post("/auth/password")
+async def auth_change_password(
+    req: ChangePasswordRequest,
+    credentials=Depends(bearer_scheme),
+    user: dict = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """修改密码。成功后当前 token 拉黑，需要重新登录。"""
+    error = await change_password(session, user["id"], req.old_password, req.new_password)
+    if error:
+        return JSONResponse(status_code=400, content={"error": error})
+
+    # 强制重新登录
+    try:
+        payload = decode_token(credentials.credentials)
+        await blacklist_token(payload)
+    except Exception:
+        logger.warning("change password: token 解析失败", exc_info=True)
+    return {"ok": True, "message": "密码已修改，请重新登录"}
+
+
+@app.get("/auth/stats")
+async def auth_stats(
+    user: dict = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """当前用户的个人统计（历史会话分布、评价数）。"""
+    return await get_user_stats(session, user["id"])
+
 @app.post("/interview/start")
-async def start_interview(req: StartRequest, session: AsyncSession = Depends(get_session)):
+async def start_interview(
+    req: StartRequest,
+    session: AsyncSession = Depends(get_session),
+    user: Optional[dict] = Depends(get_optional_user),
+):
     session_id = str(uuid.uuid4())
+    # 登录用户以 token 身份为准，忽略客户端传入的 user_id（防伪造）
+    effective_user_id = user["id"] if user else req.user_id
+
     # 先创建会话（含 system prompt + 元信息）
     await create_session(session_id, req.topic, req.difficulty,
-                         req.language, req.user_id, "")
+                         req.language, effective_user_id, "")
 
     # 优先从题库检索（published/new），命中则直接使用，节省 LLM 调用
-    used_ids = await get_used_question_ids(req.user_id)
+    used_ids = await get_used_question_ids(effective_user_id)
     picked = await pick_question(
         session, req.difficulty, req.language, req.topic, used_ids
     )
@@ -70,7 +173,7 @@ async def start_interview(req: StartRequest, session: AsyncSession = Depends(get
     if picked is not None:
         question_text = picked.description
         await increment_usage(session, picked)
-        await mark_question_used(req.user_id, picked.id)
+        await mark_question_used(effective_user_id, picked.id)
         source, question_id = "bank", picked.id
         await add_message(session_id, "assistant", question_text)
         logger.info("出题来源=题库 id=%s", question_id)
@@ -91,18 +194,26 @@ async def start_interview(req: StartRequest, session: AsyncSession = Depends(get
     generated_summary = await generate_session_summary(await get_history(session_id))
     await set_session_summary(session_id, generated_summary)
 
-    # 用题目文本更新会话标题
+    # 用题目文本更新会话标题（Redis 元信息）
     from interview_manager import _get_redis, _meta_key, _make_title, SESSION_TTL
     redis = _get_redis()
     meta_key = _meta_key(session_id)
     meta_raw = await redis.get(meta_key)
+    title = f"[{req.language}] {req.topic} 面试"
     if meta_raw:
         meta = json.loads(meta_raw)
         meta["title"] = _make_title(req.topic, req.language, question_text)
+        title = meta["title"]
         if question_id is not None:
             meta["question_id"] = question_id
             meta["question_source"] = source
         await redis.setex(meta_key, SESSION_TTL, json.dumps(meta, ensure_ascii=False))
+
+    # 同步会话索引到 PostgreSQL（永久历史）
+    await upsert_session(
+        session, session_id, effective_user_id, title,
+        req.language, req.topic, req.difficulty,
+    )
 
     return {
         "session_id": session_id,
@@ -213,24 +324,50 @@ async def get_rubric(session: AsyncSession = Depends(get_session)):
 # ==================== 多会话管理 ====================
 
 @app.get("/interview/sessions")
-async def list_sessions(user_id: str):
-    """返回用户所有会话列表"""
-    sessions = await get_user_sessions(user_id)
-    return {"sessions": sessions}
+async def list_sessions(
+    user_id: str = "",
+    user: Optional[dict] = Depends(get_optional_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """返回用户会话列表（PostgreSQL 索引）。登录用户以 token 身份为准。"""
+    uid = user["id"] if user else user_id
+    if not uid:
+        return {"sessions": []}
+    rows = await list_sessions_by_user(session, uid)
+    return {"sessions": [r.to_dict() for r in rows]}
 
 
 @app.get("/interview/session/{session_id}")
-async def load_session(session_id: str):
-    """加载指定会话的完整消息 + 元信息"""
+async def load_session(
+    session_id: str,
+    user: Optional[dict] = Depends(get_optional_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """加载指定会话的完整消息 + 元信息。登录用户只能访问自己的会话。"""
+    if user is not None:
+        index = await get_session_index(session, session_id)
+        if index is None or index.user_id != user["id"]:
+            return JSONResponse(status_code=403, content={"error": "无权访问该会话"})
+
     messages = await get_history(session_id)
     meta = await get_session_meta(session_id)
     return {"session_id": session_id, "messages": messages, "meta": meta}
 
 
 @app.delete("/interview/session/{session_id}")
-async def remove_session(session_id: str, user_id: str):
-    """删除一个会话"""
-    await delete_session(session_id, user_id)
+async def remove_session(
+    session_id: str,
+    user_id: str = "",
+    user: Optional[dict] = Depends(get_optional_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """删除一个会话（Redis 数据 + PostgreSQL 索引）。"""
+    uid = user["id"] if user else user_id
+    if not uid:
+        return JSONResponse(status_code=400, content={"error": "缺少用户身份"})
+
+    await delete_session(session_id, uid)
+    await delete_session_index(session, session_id)
     return {"ok": True}
 
 

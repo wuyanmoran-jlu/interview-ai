@@ -89,3 +89,22 @@ class QuestionRatingCreate(BaseModel):
     value: int = 1          # 1=赞，0=踩
     dimension: str = "overall"  # clarity / difficulty / test_cases / overall
     comment: Optional[str] = None
+
+
+# ===== 用户认证 =====
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    anonymous_id: Optional[str] = None  # 可选：注册时合并匿名历史
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    anonymous_id: Optional[str] = None  # 可选：登录时合并匿名历史
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str

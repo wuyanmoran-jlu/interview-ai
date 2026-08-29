@@ -17,5 +17,9 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
+    rules: {
+      // 数据获取 effect（异步函数内 setState）是本项目标准模式，关闭这条过度严格的新规则
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])

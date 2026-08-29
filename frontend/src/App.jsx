@@ -4,6 +4,9 @@ import ReactMarkdown from 'react-markdown'
 import axios from 'axios'
 import './App.css'
 import KBAdmin from './KBAdmin'
+import LoginModal from './LoginModal'
+import ProfileModal from './ProfileModal'
+import { clearAuth, getCurrentUser, getEffectiveUserId, resetAnonymousId } from './auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
@@ -59,17 +62,10 @@ const DIFFICULTIES = [
   { value: '困难', label: '困难' },
 ]
 
-function getUserId() {
-  let uid = localStorage.getItem('interview_user_id')
-  if (!uid) {
-    uid = 'user-' + crypto.randomUUID()
-    localStorage.setItem('interview_user_id', uid)
-  }
-  return uid
-}
-
 function App() {
-  const [userId] = useState(getUserId)
+  const [currentUser, setCurrentUser] = useState(getCurrentUser)
+  const [showLogin, setShowLogin] = useState(false)
+  const [showProfile, setShowProfile] = useState(false)
   const [sessions, setSessions] = useState([])
   const [sessionId, setSessionId] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -98,13 +94,13 @@ function App() {
     try {
       setSessionError('')
       const res = await axios.get(`${API_BASE}/interview/sessions`, {
-        params: { user_id: userId },
+        params: { user_id: getEffectiveUserId() },
       })
       setSessions(res.data.sessions || [])
     } catch (err) {
       setSessionError('Failed to load sessions: ' + (err.response?.data?.detail || err.message))
     }
-  }, [userId])
+  }, [])
 
   useEffect(() => { loadSessions() }, [loadSessions])
 
@@ -144,7 +140,7 @@ function App() {
     if (!confirm('确定删除这个会话？')) return
     try {
       await axios.delete(`${API_BASE}/interview/session/${id}`, {
-        params: { user_id: userId },
+        params: { user_id: getEffectiveUserId() },
       })
       if (sessionId === id) {
         setSessionId(null)
@@ -168,7 +164,7 @@ function App() {
         topic: topic,
         difficulty: difficulty,
         language: language,
-        user_id: userId,
+        user_id: getEffectiveUserId(),
       })
       setSessionId(res.data.session_id)
       setQuestion(res.data.question)
@@ -275,7 +271,7 @@ function App() {
     if (!questionId) return
     try {
       await axios.post(`${API_BASE}/kb/questions/${questionId}/rating`, {
-        user_id: userId,
+        user_id: getEffectiveUserId(),
         value: value,
         dimension: 'overall',
       })
@@ -298,6 +294,39 @@ function App() {
       }
     }
   }
+
+  const handleLogout = async () => {
+    try {
+      await axios.post(`${API_BASE}/auth/logout`)
+    } catch {
+      // token 已失效等情况忽略，继续本地清理
+    }
+    clearAuth()
+    resetAnonymousId()  // 登出后回到匿名模式，生成新的匿名 ID
+    setCurrentUser(null)
+    setSessionId(null)
+    setQuestion('')
+    setReview('')
+    setOutput('')
+    setQuestionId(null)
+    setRated(false)
+    setRatingMsg('')
+    await loadSessions()
+  }
+
+  // token 失效（401）时的全局处理
+  useEffect(() => {
+    const handler = () => {
+      setCurrentUser(null)
+      resetAnonymousId()
+      setSessionId(null)
+      setQuestion('')
+      setReview('')
+      alert('登录已失效，请重新登录。')
+    }
+    window.addEventListener('auth-expired', handler)
+    return () => window.removeEventListener('auth-expired', handler)
+  }, [])
 
   const monacoLang = language === 'cpp' ? 'cpp' : language
 
@@ -345,11 +374,22 @@ function App() {
             title="查看评分细则">
             {showRubric ? '隐藏细则' : '评分细则'}
           </button>
+          <div className="user-area">
+            {currentUser ? (
+              <>
+                <button className="user-name user-name-btn" onClick={() => setShowProfile(true)}>
+                  👤 {currentUser.username}
+                </button>
+                <button className="user-btn" onClick={handleLogout}>登出</button>
+              </>
+            ) : (
+              <button className="user-btn" onClick={() => setShowLogin(true)}>登录 / 注册</button>
+            )}
+          </div>
         </div>
       </header>
       {view === 'interview' ? (
-      <div className="main">
-        <div className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
+      <div className="main">        <div className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
           <div className="sidebar-header"><span>会话记录</span></div>
           <div className="session-list">
             {sessionError && (
@@ -461,6 +501,28 @@ function App() {
       ) : (
         <KBAdmin />
       )}
+      <LoginModal
+        open={showLogin}
+        onClose={() => setShowLogin(false)}
+        onAuth={(user) => { setCurrentUser(user); loadSessions() }}
+      />
+      <ProfileModal
+        open={showProfile}
+        onClose={() => setShowProfile(false)}
+        user={currentUser}
+        onLoggedOut={() => {
+          setCurrentUser(null)
+          setSessionId(null)
+          setQuestion('')
+          setReview('')
+          setOutput('')
+          setQuestionId(null)
+          setRated(false)
+          setRatingMsg('')
+          setShowProfile(false)
+          loadSessions()
+        }}
+      />
     </div>
   )
 }

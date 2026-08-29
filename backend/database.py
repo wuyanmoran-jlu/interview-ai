@@ -41,7 +41,9 @@ class Base(DeclarativeBase):
 
 async def init_db() -> None:
     """创建所有未存在的表（开发期快速建表，后续可切换 Alembic 迁移）。"""
+    import auth_service  # noqa: F401  # 确保用户表注册到 metadata
     import knowledge_base  # noqa: F401  # 确保所有模型注册到 metadata
+    import user_sessions  # noqa: F401  # 确保会话索引表注册到 metadata
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

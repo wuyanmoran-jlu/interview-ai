@@ -63,23 +63,8 @@ services:
     <<: *default-logging
     restart: always
 
-  # === 知识库 PostgreSQL（题库 + 评价 + 评分标准）===
-  kb-db:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_DB=interview_kb
-      - POSTGRES_USER=interview
-      - POSTGRES_PASSWORD=kb_pass_2025_dev
-    ports:
-      - "5433:5432"
-    volumes:
-      - kb-postgres-data:/var/lib/postgresql/data
-    <<: *default-logging
-    restart: always
-
 volumes:
   postgres-data:
   redis-data:
   session-redis-data:
-  kb-postgres-data:
   shared:
